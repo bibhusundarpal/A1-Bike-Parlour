@@ -1,0 +1,51 @@
+trigger ServiceRequestDiscountTrigger on Service_Request__c (before insert, before update) {
+    // Get the vehicle and associated customer IDs to query their membership level
+    Set<Id> vehicleIds = new Set<Id>();
+    for (Service_Request__c request : Trigger.new) {
+        if (request.Vehicle__c != null) {
+            vehicleIds.add(request.Vehicle__c);
+        }
+    }
+
+    // Map to hold Vehicle Ids to their associated Customer's Membership Level
+    Map<Id, String> vehicleToMembershipLevelMap = new Map<Id, String>();
+
+    // Query for vehicles and their associated customers' membership levels
+    if (!vehicleIds.isEmpty()) {
+        List<Vehicle__c> vehicles = [
+            SELECT Id, Customer__r.Membership_Level__c
+            FROM Vehicle__c
+            WHERE Id IN :vehicleIds
+        ];
+
+        // Store the membership level for each vehicle
+        for (Vehicle__c vehicle : vehicles) {
+            vehicleToMembershipLevelMap.put(vehicle.Id, vehicle.Customer__r.Membership_Level__c);
+        }
+    }
+
+    // Calculate the actual cost with discounts based on membership level
+    for (Service_Request__c request : Trigger.new) {
+        if (request.Total_Cost__c != null) {
+            // Get the membership level from the map
+            String membershipLevel = vehicleToMembershipLevelMap.get(request.Vehicle__c);
+            Decimal discountPercentage = 0;
+
+            // Determine the discount percentage based on membership level
+            if (membershipLevel == 'Silver') {
+                discountPercentage = 0.05; // 5% for Silver
+            } else if (membershipLevel == 'Gold') {
+                discountPercentage = 0.10; // 10% for Gold
+            } else if (membershipLevel == 'Platinum') {
+                discountPercentage = 0.15; // 15% for Platinum
+            }
+
+            // Calculate the discount amount and the actual cost
+            Decimal discountAmount = request.Total_Cost__c * discountPercentage;
+            request.Actual_Cost__c = request.Total_Cost__c - discountAmount;
+        } else {
+            // If Total_Cost__c is null, set Actual_Cost__c to null as well
+            request.Actual_Cost__c = null;
+        }
+    }
+}
