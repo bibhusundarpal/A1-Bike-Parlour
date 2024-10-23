@@ -1,0 +1,143 @@
+trigger ServiceRequestTrigger on Service_Request__c (after insert, after update, after delete, after undelete, before insert, before update) {
+    // For discount calculation
+    if (Trigger.isBefore) {
+        // Set to collect Vehicle IDs from the incoming requests
+        Set<Id> vehicleIds = new Set<Id>();
+        for (Service_Request__c request : Trigger.new) {
+            if (request.Vehicle__c != null) {
+                vehicleIds.add(request.Vehicle__c);
+            }
+        }
+
+        // Map to hold Vehicle Ids to their associated Customer's Membership Level
+        Map<Id, String> vehicleToMembershipLevelMap = new Map<Id, String>();
+
+        // Query for vehicles and their associated customers' membership levels
+        if (!vehicleIds.isEmpty()) {
+            List<Vehicle__c> vehicles = [
+                SELECT Id, Customer__r.Membership_Level__c
+                FROM Vehicle__c
+                WHERE Id IN :vehicleIds
+            ];
+
+            // Store the membership level for each vehicle
+            for (Vehicle__c vehicle : vehicles) {
+                vehicleToMembershipLevelMap.put(vehicle.Id, vehicle.Customer__r.Membership_Level__c);
+            }
+        }
+
+        // Calculate the actual cost with discounts based on membership level
+        for (Service_Request__c request : Trigger.new) {
+            if (request.Total_Cost__c != null) {
+                // Get the membership level from the map
+                String membershipLevel = vehicleToMembershipLevelMap.get(request.Vehicle__c);
+                request.Actual_Cost__c = calculateActualCost(request.Total_Cost__c, membershipLevel);
+            } else {
+                // If Total_Cost__c is null, set Actual_Cost__c to null as well
+                request.Actual_Cost__c = null;
+            }
+        }
+    }
+
+    // For updating customer membership
+    if (Trigger.isAfter) {
+        // Set to store unique Vehicle IDs to be processed.
+        Set<Id> vehicleIds = new Set<Id>();
+
+        // Collect Vehicle IDs from the Service Requests in the trigger context.
+        if (Trigger.isInsert || Trigger.isUpdate || Trigger.isUndelete) {
+            for (Service_Request__c sr : Trigger.new) {
+                if (sr.Vehicle__c != null) {
+                    vehicleIds.add(sr.Vehicle__c);
+                }
+            }
+        }
+
+        if (Trigger.isDelete) {
+            for (Service_Request__c sr : Trigger.old) {
+                if (sr.Vehicle__c != null) {
+                    vehicleIds.add(sr.Vehicle__c);
+                }
+            }
+        }
+
+        // Map to store the total costs for each Vehicle.
+        Map<Id, Decimal> vehicleTotalCosts = new Map<Id, Decimal>();
+
+        // Query all Service Requests related to the Vehicles affected.
+        List<AggregateResult> aggregatedResults = [
+            SELECT Vehicle__c, SUM(Total_Cost__c) totalServiceCost
+            FROM Service_Request__c
+            WHERE Vehicle__c IN :vehicleIds
+            GROUP BY Vehicle__c
+        ];
+
+        // Store the aggregated total service costs for each Vehicle.
+        for (AggregateResult ar : aggregatedResults) {
+            Id vehicleId = (Id) ar.get('Vehicle__c');
+            Decimal totalServiceCost = (Decimal) ar.get('totalServiceCost');
+            vehicleTotalCosts.put(vehicleId, totalServiceCost);
+        }
+
+        // List to store Customer records to update.
+        List<Customer__c> customersToUpdate = new List<Customer__c>();
+
+        // Query related Vehicles and their Customers.
+        List<Vehicle__c> vehicles = [
+            SELECT Id, Customer__c, Customer__r.Membership_Level__c
+            FROM Vehicle__c
+            WHERE Id IN :vehicleIds
+        ];
+
+        // Determine the membership tier for each Vehicle's Customer based on the total cost.
+        for (Vehicle__c vehicle : vehicles) {
+            Decimal totalCost = vehicleTotalCosts.get(vehicle.Id);
+
+            if (totalCost != null && vehicle.Customer__c != null) {
+                // Create a new Customer object for update.
+                Customer__c customer = new Customer__c();
+                customer.Id = vehicle.Customer__c;
+
+                // Set the membership level based on the total cost thresholds.
+                if (totalCost >= 10000) {
+                    customer.Membership_Level__c = 'Platinum';
+                } else if (totalCost >= 5000) {
+                    customer.Membership_Level__c = 'Gold';
+                } else if (totalCost >= 3000) {
+                    customer.Membership_Level__c = 'Silver';
+                } else {
+                    customer.Membership_Level__c = null; // Clears membership if below 3000.
+                }
+
+                customersToUpdate.add(customer);
+            }
+        }
+
+        // Update the Customer records with their new membership levels.
+        if (!customersToUpdate.isEmpty()) {
+            try {
+                update customersToUpdate;
+            } catch (DmlException e) {
+                System.debug('Error updating customers: ' + e.getMessage());
+            }
+        }
+    }
+
+    // Helper method to calculate actual cost based on membership level
+    private static Decimal calculateActualCost(Decimal totalCost, String membershipLevel) {
+        Decimal discountPercentage = 0;
+
+        // Determine the discount percentage based on membership level
+        if (membershipLevel == 'Silver') {
+            discountPercentage = 0.05; // 5% for Silver
+        } else if (membershipLevel == 'Gold') {
+            discountPercentage = 0.10; // 10% for Gold
+        } else if (membershipLevel == 'Platinum') {
+            discountPercentage = 0.15; // 15% for Platinum
+        }
+
+        // Calculate the discount amount and the actual cost
+        Decimal discountAmount = totalCost * discountPercentage;
+        return totalCost - discountAmount;
+    }
+}
