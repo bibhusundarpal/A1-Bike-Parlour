@@ -1,0 +1,4 @@
+trigger VehicleTrigger on Vehicle__c (before insert, before update) {
+    // Call the handler method to validate unique vehicle names
+    VehicleHandler.validateUniqueVehicleNames(Trigger.new);
+}
