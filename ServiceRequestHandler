@@ -1,9 +1,9 @@
-trigger ServiceRequestTrigger on Service_Request__c (after insert, after update, after delete, after undelete, before insert, before update) {
-    // For discount calculation
-    if (Trigger.isBefore) {
-        // Set to collect Vehicle IDs from the incoming requests
+public class ServiceRequestHandler {
+    // Method to handle the before insert and before update logic for discount calculation
+    public static void handleBeforeInsertUpdate(List<Service_Request__c> newRequests) {
+        // Collect Vehicle IDs from the incoming requests
         Set<Id> vehicleIds = new Set<Id>();
-        for (Service_Request__c request : Trigger.new) {
+        for (Service_Request__c request : newRequests) {
             if (request.Vehicle__c != null) {
                 vehicleIds.add(request.Vehicle__c);
             }
@@ -27,26 +27,24 @@ trigger ServiceRequestTrigger on Service_Request__c (after insert, after update,
         }
 
         // Calculate the actual cost with discounts based on membership level
-        for (Service_Request__c request : Trigger.new) {
+        for (Service_Request__c request : newRequests) {
             if (request.Total_Cost__c != null) {
-                // Get the membership level from the map
                 String membershipLevel = vehicleToMembershipLevelMap.get(request.Vehicle__c);
                 request.Actual_Cost__c = calculateActualCost(request.Total_Cost__c, membershipLevel);
             } else {
-                // If Total_Cost__c is null, set Actual_Cost__c to null as well
-                request.Actual_Cost__c = null;
+                request.Actual_Cost__c = null; // If Total_Cost__c is null, set Actual_Cost__c to null as well
             }
         }
     }
 
-    // For updating customer membership
-    if (Trigger.isAfter) {
-        // Set to store unique Vehicle IDs to be processed.
+    // Method to handle the after insert, after update, after delete, and after undelete logic for updating customer membership
+    public static void handleAfterInsertUpdateUndelete(List<Service_Request__c> newRequests, List<Service_Request__c> oldRequests) {
+        // Set to store unique Vehicle IDs to be processed
         Set<Id> vehicleIds = new Set<Id>();
 
-        // Collect Vehicle IDs from the Service Requests in the trigger context.
+        // Collect Vehicle IDs from the Service Requests in the trigger context
         if (Trigger.isInsert || Trigger.isUpdate || Trigger.isUndelete) {
-            for (Service_Request__c sr : Trigger.new) {
+            for (Service_Request__c sr : newRequests) {
                 if (sr.Vehicle__c != null) {
                     vehicleIds.add(sr.Vehicle__c);
                 }
@@ -54,17 +52,17 @@ trigger ServiceRequestTrigger on Service_Request__c (after insert, after update,
         }
 
         if (Trigger.isDelete) {
-            for (Service_Request__c sr : Trigger.old) {
+            for (Service_Request__c sr : oldRequests) {
                 if (sr.Vehicle__c != null) {
                     vehicleIds.add(sr.Vehicle__c);
                 }
             }
         }
 
-        // Map to store the total costs for each Vehicle.
+        // Map to store the total costs for each Vehicle
         Map<Id, Decimal> vehicleTotalCosts = new Map<Id, Decimal>();
 
-        // Query all Service Requests related to the Vehicles affected.
+        // Query all Service Requests related to the Vehicles affected
         List<AggregateResult> aggregatedResults = [
             SELECT Vehicle__c, SUM(Total_Cost__c) totalServiceCost
             FROM Service_Request__c
@@ -72,33 +70,32 @@ trigger ServiceRequestTrigger on Service_Request__c (after insert, after update,
             GROUP BY Vehicle__c
         ];
 
-        // Store the aggregated total service costs for each Vehicle.
+        // Store the aggregated total service costs for each Vehicle
         for (AggregateResult ar : aggregatedResults) {
             Id vehicleId = (Id) ar.get('Vehicle__c');
             Decimal totalServiceCost = (Decimal) ar.get('totalServiceCost');
             vehicleTotalCosts.put(vehicleId, totalServiceCost);
         }
 
-        // List to store Customer records to update.
+        // List to store Customer records to update
         List<Customer__c> customersToUpdate = new List<Customer__c>();
 
-        // Query related Vehicles and their Customers.
+        // Query related Vehicles and their Customers
         List<Vehicle__c> vehicles = [
-            SELECT Id, Customer__c, Customer__r.Membership_Level__c
+            SELECT Id, Customer__c
             FROM Vehicle__c
             WHERE Id IN :vehicleIds
         ];
 
-        // Determine the membership tier for each Vehicle's Customer based on the total cost.
+        // Determine the membership tier for each Vehicle's Customer based on the total cost
         for (Vehicle__c vehicle : vehicles) {
             Decimal totalCost = vehicleTotalCosts.get(vehicle.Id);
 
             if (totalCost != null && vehicle.Customer__c != null) {
-                // Create a new Customer object for update.
                 Customer__c customer = new Customer__c();
                 customer.Id = vehicle.Customer__c;
 
-                // Set the membership level based on the total cost thresholds.
+                // Set the membership level based on the total cost thresholds
                 if (totalCost >= 10000) {
                     customer.Membership_Level__c = 'Platinum';
                 } else if (totalCost >= 5000) {
@@ -106,14 +103,14 @@ trigger ServiceRequestTrigger on Service_Request__c (after insert, after update,
                 } else if (totalCost >= 3000) {
                     customer.Membership_Level__c = 'Silver';
                 } else {
-                    customer.Membership_Level__c = null; // Clears membership if below 3000.
+                    customer.Membership_Level__c = null; // Clears membership if below 3000
                 }
 
                 customersToUpdate.add(customer);
             }
         }
 
-        // Update the Customer records with their new membership levels.
+        // Update the Customer records with their new membership levels
         if (!customersToUpdate.isEmpty()) {
             try {
                 update customersToUpdate;
