@@ -1,0 +1,122 @@
+public class ServiceLineItemsHandler {
+
+    // Method to handle before insert/update logic
+    public static void handleBeforeInsertUpdate(List<Service_Line_Items__c> newItems, Map<Id, Service_Line_Items__c> oldItemsMap) {
+        Set<Id> inventoryIdsToCheck = new Set<Id>();
+
+        // Collect Inventory Item IDs to check available quantity
+        for (Service_Line_Items__c lineItem : newItems) {
+            if (lineItem.Inventory_Item__c != null && lineItem.Quantity_Used__c != null) {
+                inventoryIdsToCheck.add(lineItem.Inventory_Item__c);
+            }
+        }
+
+        if (!inventoryIdsToCheck.isEmpty()) {
+            // Query to get available quantity for the inventory items
+            Map<Id, Service_Inventory__c> inventoryItemsMap = new Map<Id, Service_Inventory__c>(
+                [SELECT Id, Quantity_Available__c FROM Service_Inventory__c WHERE Id IN :inventoryIdsToCheck]
+            );
+
+            // Loop through the new items to validate quantity available
+            for (Service_Line_Items__c lineItem : newItems) {
+                // Get old quantity used if it is an update
+                Decimal oldQuantityUsed = 0;
+                if (oldItemsMap != null && oldItemsMap.containsKey(lineItem.Id)) {
+                    oldQuantityUsed = oldItemsMap.get(lineItem.Id).Quantity_Used__c;
+                }
+
+                // Calculate the net change in quantity
+                Decimal netQuantityChange = lineItem.Quantity_Used__c - oldQuantityUsed;
+
+                // Check if enough quantity is available in inventory
+                if (lineItem.Inventory_Item__c != null && inventoryItemsMap.containsKey(lineItem.Inventory_Item__c)) {
+                    Service_Inventory__c inventoryItem = inventoryItemsMap.get(lineItem.Inventory_Item__c);
+                    if (inventoryItem.Quantity_Available__c < netQuantityChange) {
+                        lineItem.Quantity_Used__c.addError('Item Unavailable: Not enough quantity available for this item.');
+                    }
+                }
+            }
+        }
+    }
+
+    // Method to handle after insert/update/delete logic
+    public static void handleAfterChange(Map<Id, Service_Line_Items__c> newItemsMap, Map<Id, Service_Line_Items__c> oldItemsMap) {
+        Set<Id> serviceRequestIds = new Set<Id>();
+        Map<Id, Decimal> inventoryAdjustments = new Map<Id, Decimal>();
+
+        // Collect the Service Request and Inventory Item IDs
+        for (Service_Line_Items__c lineItem : newItemsMap.values()) {
+            if (lineItem.Service_Request__c != null) {
+                serviceRequestIds.add(lineItem.Service_Request__c);
+            }
+            if (lineItem.Inventory_Item__c != null && lineItem.Quantity_Used__c != null) {
+                Decimal quantityChange = lineItem.Quantity_Used__c;
+                if (oldItemsMap != null && oldItemsMap.containsKey(lineItem.Id)) {
+                    quantityChange = lineItem.Quantity_Used__c - oldItemsMap.get(lineItem.Id).Quantity_Used__c;
+                }
+                if (inventoryAdjustments.containsKey(lineItem.Inventory_Item__c)) {
+                    inventoryAdjustments.put(lineItem.Inventory_Item__c, inventoryAdjustments.get(lineItem.Inventory_Item__c) - quantityChange);
+                } else {
+                    inventoryAdjustments.put(lineItem.Inventory_Item__c, -quantityChange);
+                }
+            }
+        }
+
+        // Handle logic to update inventory and service request total cost
+        updateInventoryAndServiceRequests(serviceRequestIds, inventoryAdjustments);
+    }
+
+    // Helper method to handle inventory updates and service request total cost calculation
+    public static void updateInventoryAndServiceRequests(Set<Id> serviceRequestIds, Map<Id, Decimal> inventoryAdjustments) {
+        // Update Inventory items
+        if (!inventoryAdjustments.isEmpty()) {
+            List<Service_Inventory__c> inventoryItemsToUpdate = [
+                SELECT Id, Quantity_Available__c
+                FROM Service_Inventory__c
+                WHERE Id IN :inventoryAdjustments.keySet()
+            ];
+
+            for (Service_Inventory__c inventoryItem : inventoryItemsToUpdate) {
+                if (inventoryAdjustments.containsKey(inventoryItem.Id)) {
+                    inventoryItem.Quantity_Available__c += inventoryAdjustments.get(inventoryItem.Id);
+                }
+            }
+
+            if (!inventoryItemsToUpdate.isEmpty()) {
+                update inventoryItemsToUpdate;
+            }
+        }
+
+        // Update Service Requests
+        if (!serviceRequestIds.isEmpty()) {
+            Map<Id, Decimal> serviceRequestCosts = new Map<Id, Decimal>();
+
+            List<Service_Line_Items__c> lineItems = [
+                SELECT Service_Request__c, Quantity_Used__c, Inventory_Item__r.Cost_Per_Unit__c
+                FROM Service_Line_Items__c
+                WHERE Service_Request__c IN :serviceRequestIds
+            ];
+
+            for (Service_Line_Items__c lineItem : lineItems) {
+                Decimal lineItemCost = lineItem.Quantity_Used__c * lineItem.Inventory_Item__r.Cost_Per_Unit__c;
+                if (serviceRequestCosts.containsKey(lineItem.Service_Request__c)) {
+                    serviceRequestCosts.put(lineItem.Service_Request__c, serviceRequestCosts.get(lineItem.Service_Request__c) + lineItemCost);
+                } else {
+                    serviceRequestCosts.put(lineItem.Service_Request__c, lineItemCost);
+                }
+            }
+
+            List<Service_Request__c> serviceRequestsToUpdate = new List<Service_Request__c>();
+            for (Id serviceRequestId : serviceRequestCosts.keySet()) {
+                serviceRequestsToUpdate.add(new Service_Request__c(
+                    Id = serviceRequestId,
+                    Total_Cost__c = serviceRequestCosts.get(serviceRequestId)
+                ));
+            }
+
+            if (!serviceRequestsToUpdate.isEmpty()) {
+                update serviceRequestsToUpdate;
+            }
+        }
+    }
+}
