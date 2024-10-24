@@ -1,0 +1,13 @@
+trigger ServiceRequestTrigger on Service_Request__c (after insert, after update, after delete, after undelete, before insert, before update) {
+    if (Trigger.isBefore) {
+        ServiceRequestHandler.handleBeforeInsertUpdate(Trigger.new);
+    }
+
+    if (Trigger.isAfter) {
+        if (Trigger.isInsert || Trigger.isUpdate || Trigger.isUndelete) {
+            ServiceRequestHandler.handleAfterInsertUpdateUndelete(Trigger.new, Trigger.old);
+        } else if (Trigger.isDelete) {
+            ServiceRequestHandler.handleAfterInsertUpdateUndelete(Trigger.old, Trigger.new);
+        }
+    }
+}
