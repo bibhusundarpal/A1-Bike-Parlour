@@ -1,0 +1,37 @@
+public class VehicleHandler {
+    // Method to handle before insert and before update logic for vehicle registration checks
+    public static void validateUniqueVehicleNames(List<Vehicle__c> newVehicles) {
+        // Set to store all vehicle registration numbers (Names)
+        Set<String> vehicleNames = new Set<String>();
+
+        // Collect vehicle names from the new records
+        for (Vehicle__c vehicle : newVehicles) {
+            if (!String.isBlank(vehicle.Name)) {
+                vehicleNames.add(vehicle.Name.trim().toUpperCase());
+            }
+        }
+
+        // Query for existing records with the same registration numbers
+        if (!vehicleNames.isEmpty()) {
+            List<Vehicle__c> existingVehicles = [
+                SELECT Id, Name 
+                FROM Vehicle__c 
+                WHERE Name IN :vehicleNames
+            ];
+
+            // Create a set of existing vehicle names to compare
+            Set<String> existingVehicleNames = new Set<String>();
+            for (Vehicle__c existing : existingVehicles) {
+                existingVehicleNames.add(existing.Name.trim().toUpperCase());
+            }
+
+            // Loop through the new records to add errors if duplicates are found
+            for (Vehicle__c vehicle : newVehicles) {
+                if (existingVehicleNames.contains(vehicle.Name.trim().toUpperCase())) {
+                    // Add the error directly to the 'Name' field
+                    vehicle.Name.addError('A vehicle with this registration number already exists.');
+                }
+            }
+        }
+    }
+}
